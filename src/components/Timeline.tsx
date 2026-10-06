@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnalysisResult, ClipId, formatClipId } from '../lib/analysis';
+import type { ProvenanceSegment } from '../lib/provenance';
 import { formatFrame } from '../lib/timecode';
 import { computeTimelineTicks } from '../lib/timeline';
 
@@ -14,9 +15,17 @@ interface TimelineProps {
   pixelsPerFrame: number;
   active: boolean;
   reuseHighlights?: ReuseHighlight[];
+  /** 来源交付预演的分段结果：与面板、裁决状态、导出共用同一份。 */
+  provenanceSegments?: ProvenanceSegment[];
 }
 
-export function Timeline({ result, pixelsPerFrame, active, reuseHighlights = [] }: TimelineProps) {
+export function Timeline({
+  result,
+  pixelsPerFrame,
+  active,
+  reuseHighlights = [],
+  provenanceSegments = []
+}: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ scrollLeft: 0, width: 1200 });
   const width = Math.max(1, result.dayFrames * pixelsPerFrame);
@@ -166,6 +175,45 @@ export function Timeline({ result, pixelsPerFrame, active, reuseHighlights = [] 
             </g>
           );
         })}
+
+        {provenanceSegments.map((segment) => {
+          const left = x(segment.recordStart.frame);
+          const segmentWidth = Math.max(2, segment.durationFrames * pixelsPerFrame);
+          const kindText =
+            segment.kind === 'gap' ? '空隙' : segment.kind === 'unique' ? '唯一来源' : '多来源冲突';
+          return (
+            <g key={`provenance-${segment.index}`}>
+              <rect
+                x={left}
+                y={116}
+                width={segmentWidth}
+                height={12}
+                className={`provenance-band provenance-band-${segment.kind}`}
+              >
+                <title>
+                  {`预演段 ${segment.index + 1}（${kindText}）：${segment.recordStart.timecode} → ${segment.recordEnd.timecode}，${segment.durationFrames} 帧`}
+                </title>
+              </rect>
+            </g>
+          );
+        })}
+
+        {provenanceSegments.length > 0 && (
+          <g aria-hidden="true">
+            {[provenanceSegments[0].recordStart.frame, provenanceSegments[provenanceSegments.length - 1].recordEnd.frame].map(
+              (frame) => (
+                <line
+                  key={`provenance-edge-${frame}`}
+                  x1={x(frame)}
+                  y1={112}
+                  x2={x(frame)}
+                  y2={132}
+                  className="provenance-edge"
+                />
+              )
+            )}
+          </g>
+        )}
 
         {result.firstBreak && (
           <g id="timeline-first-break">

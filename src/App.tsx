@@ -2,9 +2,22 @@ import { useEffect, useMemo, useState } from 'react';
 import { Timeline, type ReuseHighlight } from './components/Timeline';
 import { ResultTable } from './components/ResultTable';
 import { ReuseAudit } from './components/ReuseAudit';
+import { ProvenancePreviewPanel } from './components/ProvenancePreview';
 import { SAMPLE_INPUT } from './sample';
-import { AnalysisResult, ValidationIssue, analyzeInput, formatClipId } from './lib/analysis';
+import {
+  AnalysisResult,
+  ClipId,
+  ValidationIssue,
+  analyzeInput,
+  formatClipId
+} from './lib/analysis';
 import type { SourceReuseReport } from './lib/reuse';
+import {
+  buildProvenanceManifest,
+  buildProvenancePreview,
+  collectProvenanceBlockers,
+  type ProvenancePreview
+} from './lib/provenance';
 
 const ZOOM_LEVELS = [
   { label: '全日览', pixelsPerFrame: 0.0002 },
@@ -22,6 +35,17 @@ const ZOOM_LEVELS = [
 interface ResultSnapshot {
   result: AnalysisResult;
   reuseReport: SourceReuseReport;
+}
+
+/**
+ * 来源交付预演会话：选区分段结果 + 冲突裁决，二者共同绑定到
+ * 产生它们的分析快照（引用比较）。输入更新或非法编辑都会让旧会话失配，
+ * 旧决定不会被套用到新结果上。
+ */
+interface ProvenanceSession {
+  snapshot: ResultSnapshot;
+  preview: ProvenancePreview;
+  rulings: ReadonlyMap<number, ClipId>;
 }
 
 function parseJsonInput(text: string) {
@@ -57,6 +81,8 @@ export default function App() {
     null
   );
   const [zoomIndex, setZoomIndex] = useState(1);
+  const [provenanceSession, setProvenanceSession] = useState<ProvenanceSession | null>(null);
+  const [selectionIssues, setSelectionIssues] = useState<ValidationIssue[]>([]);
 
   const response = useMemo(() => {
     const parsed = parseJsonInput(inputText);
@@ -107,6 +133,61 @@ export default function App() {
   async function importFile(file: File | undefined) {
     if (!file) return;
     setInputText(await file.text());
+  }
+
+  // 预演会话只在仍绑定当前有效快照时可用；否则视为已失效的旧决定。
+  const activeProvenanceSession =
+    provenanceSession && activeSnapshot && provenanceSession.snapshot === activeSnapshot
+      ? provenanceSession
+      : null;
+  const provenanceRevoked = provenanceSession !== null && activeProvenanceSession === null;
+  const provenanceBlockers = activeProvenanceSession
+    ? collectProvenanceBlockers(activeProvenanceSession.preview, activeProvenanceSession.rulings)
+    : [];
+
+  function handleBuildProvenance(selectionIn: string, selectionOut: string) {
+    if (!activeSnapshot) return;
+    const response = buildProvenancePreview(activeSnapshot.result, selectionIn, selectionOut);
+    if (!response.ok) {
+      // 选区本身非法：不产生新会话，也不影响仍绑定当前快照的旧会话。
+      setSelectionIssues(response.issues);
+      return;
+    }
+    setSelectionIssues([]);
+    // 新选区 = 新会话：裁决从零开始，绝不沿用旧决定。
+    setProvenanceSession({ snapshot: activeSnapshot, preview: response.preview, rulings: new Map() });
+  }
+
+  function handleRuleConflict(segmentIndex: number, clipId: ClipId) {
+    setProvenanceSession((current) => {
+      if (!current || current.snapshot !== activeSnapshot) return current;
+      const segment = current.preview.segments[segmentIndex];
+      // 只能为冲突段选择该段现有贡献片段；其余调用一律忽略。
+      if (!segment || segment.kind !== 'conflict') return current;
+      if (!segment.contributions.some((contribution) => contribution.clipId === clipId)) {
+        return current;
+      }
+      const rulings = new Map(current.rulings);
+      if (rulings.get(segmentIndex) === clipId) {
+        rulings.delete(segmentIndex);
+      } else {
+        rulings.set(segmentIndex, clipId);
+      }
+      return { ...current, rulings };
+    });
+  }
+
+  function handleExportProvenance() {
+    if (!activeProvenanceSession) return;
+    const response = buildProvenanceManifest(
+      activeProvenanceSession.preview,
+      activeProvenanceSession.rulings
+    );
+    if (!response.ok) return;
+    downloadJson(
+      `source-manifest-${response.manifest.rate.replace('/', '_')}.json`,
+      response.manifest
+    );
   }
 
   function handleSelectSegment(index: number) {
@@ -263,6 +344,7 @@ export default function App() {
             pixelsPerFrame={ZOOM_LEVELS[zoomIndex].pixelsPerFrame}
             active={!stale}
             reuseHighlights={reuseHighlights}
+            provenanceSegments={activeProvenanceSession?.preview.segments ?? []}
           />
           <ResultTable clips={shownSnapshot.result.clips} />
         </section>
@@ -282,6 +364,19 @@ export default function App() {
               activeSnapshot.reuseReport
             )
           }
+        />
+      )}
+
+      {shownSnapshot && (
+        <ProvenancePreviewPanel
+          active={!stale}
+          session={activeProvenanceSession}
+          revoked={provenanceRevoked}
+          issues={selectionIssues}
+          blockers={provenanceBlockers}
+          onBuild={handleBuildProvenance}
+          onRule={handleRuleConflict}
+          onExport={handleExportProvenance}
         />
       )}
 

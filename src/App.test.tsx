@@ -22,8 +22,34 @@ const CONTIGUOUS_INPUT = JSON.stringify({
 
 const INVALID_INPUT = JSON.stringify({ rate: '30000/1001', clips: [] });
 
+// 甲录制 [00:10:00;00, 00:10:10;00)，乙 [00:10:05;00, 00:10:10;00)+150 与甲交叠 150 帧，
+// 丙 [00:10:20;00, 00:10:25;00)，乙丙之间留 150 帧空隙。
+const PROVENANCE_INPUT = JSON.stringify({
+  rate: '30000/1001',
+  clips: [
+    { id: '甲', sourceIn: '01:00:00;00', sourceOut: '01:00:10;00', recordIn: '00:10:00;00' },
+    { id: '乙', sourceIn: '02:00:00;00', sourceOut: '02:00:10;00', recordIn: '00:10:05;00' },
+    { id: '丙', sourceIn: '03:00:00;00', sourceOut: '03:00:05;00', recordIn: '00:10:20;00' }
+  ]
+});
+
+// 同批片段但乙挪到 00:10:06;00：合法的新输入，用于验证旧快照决定不被沿用。
+const PROVENANCE_INPUT_V2 = JSON.stringify({
+  rate: '30000/1001',
+  clips: [
+    { id: '甲', sourceIn: '01:00:00;00', sourceOut: '01:00:10;00', recordIn: '00:10:00;00' },
+    { id: '乙', sourceIn: '02:00:00;00', sourceOut: '02:00:10;00', recordIn: '00:10:06;00' }
+  ]
+});
+
 function setInput(value: string) {
   fireEvent.change(screen.getByLabelText('片段 JSON 输入'), { target: { value } });
+}
+
+function buildSelection(selectionIn: string, selectionOut: string) {
+  fireEvent.change(screen.getByLabelText('选区开始时码'), { target: { value: selectionIn } });
+  fireEvent.change(screen.getByLabelText('选区结束时码'), { target: { value: selectionOut } });
+  fireEvent.click(screen.getByRole('button', { name: '生成预演' }));
 }
 
 function readBlob(blob: Blob): Promise<string> {
@@ -165,5 +191,165 @@ describe('page linkage acceptance', () => {
     expect(segments).toHaveLength(1);
     expect(segments[0].clipIds).toEqual(['甲', '乙']);
     expect(segments[0].coverCount).toBe(2);
+  });
+});
+
+describe('provenance delivery preview', () => {
+  it('rules a conflict and exports the source manifest in record order', async () => {
+    const createdBlobs: Blob[] = [];
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      createdBlobs.push(blob);
+      return `blob:mock-${createdBlobs.length}`;
+    });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    const { container } = render(<App />);
+    setInput(PROVENANCE_INPUT);
+
+    const panel = screen.getByRole('region', { name: '来源交付预演' });
+    const exportButton = () =>
+      within(panel).getByRole('button', { name: '导出取材清单' }) as HTMLButtonElement;
+
+    // 选区 00:10:02;00 → 00:10:15;00：唯一甲 90 帧、冲突 150 帧、唯一乙 150 帧。
+    buildSelection('00:10:02;00', '00:10:15;00');
+    expect(panel.textContent).toContain('共 3 段');
+    expect(panel.textContent).toContain('冲突 150 帧');
+    expect(panel.textContent).toContain('导出受阻：1 段冲突未裁决');
+    expect(exportButton().disabled).toBe(true);
+
+    // 分段逐段列出：唯一段直接给出原片起止帧，冲突段列出全部贡献片段。
+    expect(panel.textContent).toContain('唯一来源 "甲" · 原片帧 107952 – 108042');
+    expect(panel.textContent).toContain('唯一来源 "乙" · 原片帧 215934 – 216084');
+    const conflictGroup = within(panel).getByRole('group', { name: '段 2 冲突裁决' });
+    const choiceJia = within(conflictGroup).getByRole('button', { name: /采用 "甲"/ });
+    const choiceYi = within(conflictGroup).getByRole('button', { name: /采用 "乙"/ });
+    expect(choiceJia.textContent).toContain('原片帧 108042 – 108192');
+    expect(choiceYi.textContent).toContain('原片帧 215784 – 215934');
+
+    // 时间线、面板与裁决共用同一份分段结果：三段色带与选区边界一一对应。
+    const bands = container.querySelectorAll('.provenance-band');
+    expect(bands).toHaveLength(3);
+    expect(bands[0].classList.contains('provenance-band-unique')).toBe(true);
+    expect(bands[1].classList.contains('provenance-band-conflict')).toBe(true);
+    expect(bands[2].classList.contains('provenance-band-unique')).toBe(true);
+    // 默认缩放 0.001 px/帧，色带 x 坐标与整数帧严格对应。
+    expect(parseFloat(bands[0].getAttribute('x')!)).toBeCloseTo(18042 * 0.001, 6);
+    expect(parseFloat(bands[1].getAttribute('x')!)).toBeCloseTo(18132 * 0.001, 6);
+    expect(parseFloat(bands[2].getAttribute('x')!)).toBeCloseTo(18282 * 0.001, 6);
+
+    // 裁决冲突段采用甲：甲两段身份相同且原片、录制坐标均连续，导出时合并。
+    fireEvent.click(choiceJia);
+    expect(choiceJia.getAttribute('aria-pressed')).toBe('true');
+    expect(panel.textContent).toContain('选区无空隙，冲突已全部裁决');
+    expect(exportButton().disabled).toBe(false);
+
+    fireEvent.click(exportButton());
+    expect(createdBlobs).toHaveLength(1);
+    const manifest = JSON.parse(await readBlob(createdBlobs[0])) as {
+      schemaVersion: number;
+      rate: string;
+      selection: { recordStart: { frame: number }; recordEnd: { frame: number } };
+      entryCount: number;
+      entries: Array<{
+        clipId: string;
+        recordStart: { frame: number; timecode: string };
+        recordEnd: { frame: number; timecode: string };
+        sourceStart: { frame: number; timecode: string };
+        sourceEnd: { frame: number; timecode: string };
+        durationFrames: number;
+      }>;
+    };
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.rate).toBe('30000/1001');
+    expect(manifest.selection.recordStart.frame).toBe(18042);
+    expect(manifest.selection.recordEnd.frame).toBe(18432);
+    expect(manifest.entryCount).toBe(2);
+    // 按录制顺序：合并后的甲（240 帧）在前，乙（150 帧）在后。
+    expect(manifest.entries[0]).toEqual({
+      clipId: '甲',
+      recordStart: { frame: 18042, timecode: '00:10:02;00' },
+      recordEnd: { frame: 18282, timecode: '00:10:10;00' },
+      sourceStart: { frame: 107952, timecode: '01:00:02;00' },
+      sourceEnd: { frame: 108192, timecode: '01:00:10;00' },
+      durationFrames: 240
+    });
+    expect(manifest.entries[1]).toEqual({
+      clipId: '乙',
+      recordStart: { frame: 18282, timecode: '00:10:10;00' },
+      recordEnd: { frame: 18432, timecode: '00:10:15;00' },
+      sourceStart: { frame: 215934, timecode: '02:00:05;00' },
+      sourceEnd: { frame: 216084, timecode: '02:00:10;00' },
+      durationFrames: 150
+    });
+  });
+
+  it('keeps export blocked while any gap remains in the selection', () => {
+    render(<App />);
+    setInput(PROVENANCE_INPUT);
+
+    const panel = screen.getByRole('region', { name: '来源交付预演' });
+    // 选区 00:10:14;00 → 00:10:21;00：唯一乙 30 帧、空隙 150 帧、唯一丙 20 帧。
+    buildSelection('00:10:14;00', '00:10:21;00');
+
+    expect(panel.textContent).toContain('共 3 段');
+    expect(panel.textContent).toContain('空隙 150 帧');
+    expect(panel.textContent).toContain('该段无任何片段覆盖：来源不明，禁止猜测');
+    expect(panel.textContent).toContain('导出受阻：1 段空隙');
+    expect(
+      (within(panel).getByRole('button', { name: '导出取材清单' }) as HTMLButtonElement).disabled
+    ).toBe(true);
+    // 没有冲突段：不提供任何裁决入口，空隙无法通过裁决消除。
+    expect(within(panel).queryAllByRole('button', { name: /采用/ })).toHaveLength(0);
+  });
+
+  it('invalidates rulings bound to a stale snapshot and never reuses old decisions', () => {
+    const { container } = render(<App />);
+    setInput(PROVENANCE_INPUT);
+    const panel = screen.getByRole('region', { name: '来源交付预演' });
+
+    buildSelection('00:10:02;00', '00:10:15;00');
+    fireEvent.click(within(panel).getByRole('button', { name: /采用 "甲"/ }));
+    expect(panel.textContent).toContain('选区无空隙，冲突已全部裁决');
+    expect(container.querySelectorAll('.provenance-band')).toHaveLength(3);
+
+    // 非法编辑：旧预演与裁决失效，导出按钮禁用，时间线色带撤下。
+    setInput(INVALID_INPUT);
+    expect(screen.getByText('当前结论已撤销')).toBeTruthy();
+    expect(panel.textContent).toContain('此前预演与冲突裁决全部失效');
+    expect(
+      (within(panel).getByRole('button', { name: '导出取材清单' }) as HTMLButtonElement).disabled
+    ).toBe(true);
+    expect(within(panel).queryAllByRole('button', { name: /采用/ })).toHaveLength(0);
+    expect(container.querySelectorAll('.provenance-band')).toHaveLength(0);
+    expect(
+      (within(panel).getByRole('button', { name: '生成预演' }) as HTMLButtonElement).disabled
+    ).toBe(true);
+
+    // 新的合法输入：旧会话仍失配，失效提示保留，旧裁决不会自动套用。
+    setInput(PROVENANCE_INPUT_V2);
+    expect(screen.getByText('当前输入有效')).toBeTruthy();
+    expect(panel.textContent).toContain('此前预演与冲突裁决全部失效');
+    expect(
+      (within(panel).getByRole('button', { name: '导出取材清单' }) as HTMLButtonElement).disabled
+    ).toBe(true);
+
+    // 用同样的选区重新生成：分段按新快照重算，裁决从零开始。
+    fireEvent.click(within(panel).getByRole('button', { name: '生成预演' }));
+    expect(panel.textContent).not.toContain('此前预演与冲突裁决全部失效');
+    expect(panel.textContent).toContain('导出受阻：1 段冲突未裁决');
+    const choiceJia = within(panel).getByRole('button', { name: /采用 "甲"/ });
+    const choiceYi = within(panel).getByRole('button', { name: /采用 "乙"/ });
+    expect(choiceJia.getAttribute('aria-pressed')).toBe('false');
+    expect(choiceYi.getAttribute('aria-pressed')).toBe('false');
+    expect(
+      (within(panel).getByRole('button', { name: '导出取材清单' }) as HTMLButtonElement).disabled
+    ).toBe(true);
+
+    // 在新快照上重新裁决后才可以导出。
+    fireEvent.click(choiceYi);
+    expect(
+      (within(panel).getByRole('button', { name: '导出取材清单' }) as HTMLButtonElement).disabled
+    ).toBe(false);
   });
 });

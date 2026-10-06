@@ -595,6 +595,184 @@ tr:last-child td {
   stroke-width: 1;
 }
 
+.provenance-panel {
+  margin-top: 18px;
+  padding: 20px;
+}
+
+.provenance-stale {
+  opacity: 0.55;
+}
+
+.provenance-selection-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+}
+
+.provenance-selection-form label {
+  display: grid;
+  gap: 6px;
+  color: #a4b0c3;
+  font-size: 0.84rem;
+}
+
+.provenance-selection-form input {
+  border: 1px solid rgba(100, 116, 139, 0.35);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #07101d;
+  color: #dbeafe;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  min-width: 150px;
+}
+
+.provenance-selection-form input:focus {
+  border-color: #22d3ee;
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.1);
+}
+
+.provenance-revoked {
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  background: rgba(120, 53, 15, 0.25);
+  color: #fde68a;
+}
+
+.provenance-summary {
+  color: #a4b0c3;
+  font-size: 0.9rem;
+}
+
+.provenance-segment-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.provenance-segment {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 14px;
+  background: rgba(30, 41, 59, 0.6);
+  font-size: 0.88rem;
+}
+
+.provenance-segment-gap {
+  border-color: rgba(250, 204, 21, 0.4);
+}
+
+.provenance-segment-conflict {
+  border-color: rgba(251, 113, 133, 0.45);
+}
+
+.provenance-segment-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.provenance-badge-gap {
+  background: #facc15;
+}
+
+.provenance-badge-unique {
+  background: #5eead4;
+}
+
+.provenance-badge-conflict {
+  background: #fda4af;
+}
+
+.provenance-gap-note {
+  color: #fde68a;
+  font-size: 0.84rem;
+}
+
+.provenance-conflict-note {
+  color: #fda4af;
+  font-size: 0.84rem;
+}
+
+.provenance-contributions {
+  display: grid;
+  gap: 6px;
+}
+
+.provenance-contribution {
+  color: #a4b0c3;
+  font-size: 0.84rem;
+}
+
+.provenance-choice {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(15, 23, 42, 0.8);
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.provenance-choice:hover {
+  border-color: rgba(103, 232, 249, 0.65);
+}
+
+.provenance-choice-active {
+  border-color: #5eead4;
+  box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.18);
+  color: #d8e2f0;
+}
+
+.provenance-footer {
+  border-top: 1px solid rgba(100, 116, 139, 0.25);
+  padding-top: 12px;
+  font-size: 0.9rem;
+}
+
+.provenance-blocked {
+  color: #fda4af;
+  font-weight: 700;
+}
+
+.provenance-ready {
+  color: #a7f3d0;
+  font-weight: 700;
+}
+
+.provenance-band-gap {
+  fill: rgba(250, 204, 21, 0.45);
+  stroke: #facc15;
+}
+
+.provenance-band-unique {
+  fill: rgba(45, 212, 191, 0.55);
+  stroke: #5eead4;
+}
+
+.provenance-band-conflict {
+  fill: rgba(244, 63, 94, 0.5);
+  stroke: #fb7185;
+}
+
+.provenance-edge {
+  stroke: #e5edf8;
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+}
+
 .empty-state {
   text-align: center;
   padding: 54px 20px;
