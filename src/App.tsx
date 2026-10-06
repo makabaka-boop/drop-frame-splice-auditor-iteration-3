@@ -2,9 +2,19 @@ import { useEffect, useMemo, useState } from 'react';
 import { Timeline, type ReuseHighlight } from './components/Timeline';
 import { ResultTable } from './components/ResultTable';
 import { ReuseAudit } from './components/ReuseAudit';
+import { SourceDelivery } from './components/SourceDelivery';
 import { SAMPLE_INPUT } from './sample';
-import { AnalysisResult, ValidationIssue, analyzeInput, formatClipId } from './lib/analysis';
+import { AnalysisResult, ValidationIssue, analyzeInput, formatClipId, type ClipId } from './lib/analysis';
 import type { SourceReuseReport } from './lib/reuse';
+import {
+  createSourceDeliveryExport,
+  createSourceDeliveryPreview,
+  parseSourceDeliverySelection,
+  resolveSourceDelivery,
+  type DeliveryDecisions,
+  type DeliveryIssue,
+  type SourceDeliveryPreview
+} from './lib/delivery';
 
 const ZOOM_LEVELS = [
   { label: '全日览', pixelsPerFrame: 0.0002 },
@@ -22,6 +32,18 @@ const ZOOM_LEVELS = [
 interface ResultSnapshot {
   result: AnalysisResult;
   reuseReport: SourceReuseReport;
+}
+
+interface DeliveryDraft {
+  snapshot: ResultSnapshot;
+  preview: SourceDeliveryPreview;
+  decisions: DeliveryDecisions;
+}
+
+interface DeliveryForm {
+  start: string;
+  end: string;
+  issues: DeliveryIssue[];
 }
 
 function parseJsonInput(text: string) {
@@ -56,6 +78,12 @@ export default function App() {
   const [selection, setSelection] = useState<{ snapshot: ResultSnapshot; index: number } | null>(
     null
   );
+  const [deliveryForm, setDeliveryForm] = useState<DeliveryForm>({
+    start: '00:10:00;00',
+    end: '00:10:20;00',
+    issues: []
+  });
+  const [deliveryDraft, setDeliveryDraft] = useState<DeliveryDraft | null>(null);
   const [zoomIndex, setZoomIndex] = useState(1);
 
   const response = useMemo(() => {
@@ -82,6 +110,14 @@ export default function App() {
     }
   }, [activeSnapshot]);
 
+  // 选区与裁决绑定产生它们的分析快照。新有效输入会替换快照对象，
+  // 旧预演和旧冲突选择立即清除；只有非法编辑才保留旧视图并标记过期。
+  useEffect(() => {
+    if (activeSnapshot) {
+      setDeliveryDraft(null);
+    }
+  }, [activeSnapshot]);
+
   const shownSnapshot = activeSnapshot ?? lastSnapshot;
   const stale = !response.ok;
   const issues = response.ok ? [] : response.issues;
@@ -104,6 +140,20 @@ export default function App() {
     [selectedSegment]
   );
 
+  const activeDelivery =
+    deliveryDraft && shownSnapshot && deliveryDraft.snapshot === shownSnapshot
+      ? deliveryDraft
+      : null;
+  const deliveryResolution = activeDelivery
+    ? resolveSourceDelivery(activeDelivery.preview, activeDelivery.decisions)
+    : null;
+  const deliveryIssues = deliveryResolution && !deliveryResolution.ok ? deliveryResolution.issues : [];
+  const canExportDelivery =
+    activeSnapshot !== null
+    && activeDelivery !== null
+    && activeDelivery.snapshot === activeSnapshot
+    && deliveryResolution?.ok === true;
+
   async function importFile(file: File | undefined) {
     if (!file) return;
     setInputText(await file.text());
@@ -115,6 +165,45 @@ export default function App() {
       current && current.snapshot === shownSnapshot && current.index === index
         ? null
         : { snapshot: shownSnapshot, index }
+    );
+  }
+
+  function handleCreatePreview() {
+    if (!activeSnapshot) return;
+    const response = parseSourceDeliverySelection(
+      activeSnapshot.result.rate,
+      deliveryForm.start,
+      deliveryForm.end
+    );
+    if (!response.ok) {
+      setDeliveryForm((current) => ({ ...current, issues: response.issues }));
+      return;
+    }
+
+    setDeliveryForm((current) => ({ ...current, issues: [] }));
+    setDeliveryDraft({
+      snapshot: activeSnapshot,
+      preview: createSourceDeliveryPreview(activeSnapshot.result, response.selection),
+      decisions: {}
+    });
+  }
+
+  function handleDeliveryDecision(segmentIndex: number, clipId: ClipId) {
+    setDeliveryDraft((current) => {
+      if (!current || current.snapshot !== activeSnapshot) return current;
+      return {
+        ...current,
+        decisions: { ...current.decisions, [segmentIndex]: clipId }
+      };
+    });
+  }
+
+  function handleExportDelivery() {
+    if (!activeDelivery || !deliveryResolution?.ok) return;
+    const payload = createSourceDeliveryExport(activeDelivery.preview, deliveryResolution);
+    downloadJson(
+      `source-delivery-${activeDelivery.preview.rate.replace('/', '_')}.json`,
+      payload
     );
   }
 
@@ -208,6 +297,64 @@ export default function App() {
       </section>
 
       {shownSnapshot && (
+        <section className="panel delivery-control-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>来源交付选区</h2>
+              <p>输入丢帧时码并按半开区间 <code>[recordIn, recordOut)</code> 预演；整数帧坐标不做猜测。</p>
+            </div>
+            <div className="delivery-form">
+              <label>
+                开始帧
+                <input
+                  value={deliveryForm.start}
+                  onChange={(event) =>
+                    setDeliveryForm((current) => ({ ...current, start: event.target.value, issues: [] }))
+                  }
+                  aria-label="来源交付录制开始时码"
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                结束帧（排他）
+                <input
+                  value={deliveryForm.end}
+                  onChange={(event) =>
+                    setDeliveryForm((current) => ({ ...current, end: event.target.value, issues: [] }))
+                  }
+                  aria-label="来源交付录制结束时码（排他）"
+                  spellCheck={false}
+                />
+              </label>
+              <button
+                type="button"
+                className="button primary"
+                disabled={!activeSnapshot}
+                onClick={handleCreatePreview}
+              >
+                生成预演
+              </button>
+            </div>
+          </div>
+          {deliveryForm.issues.length > 0 && (
+            <div className="issue-list" role="alert">
+              <ul>
+                {deliveryForm.issues.map((item, index) => (
+                  <li key={`${item.code}-${index}`}>
+                    {item.path && <code>{item.path}</code>}
+                    <span>{item.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!activeSnapshot && (
+            <p className="delivery-stale-form-note">当前输入非法：修改合法输入后才能绑定新分析快照生成预演。</p>
+          )}
+        </section>
+      )}
+
+      {shownSnapshot && (
         <section className="panel result-panel">
           <div className="panel-heading result-heading">
             <div>
@@ -263,9 +410,22 @@ export default function App() {
             pixelsPerFrame={ZOOM_LEVELS[zoomIndex].pixelsPerFrame}
             active={!stale}
             reuseHighlights={reuseHighlights}
+            deliveryPreview={activeDelivery?.preview}
           />
           <ResultTable clips={shownSnapshot.result.clips} />
         </section>
+      )}
+
+      {activeDelivery && (
+        <SourceDelivery
+          preview={activeDelivery.preview}
+          decisions={activeDelivery.decisions}
+          active={activeDelivery.snapshot === activeSnapshot}
+          canExport={canExportDelivery}
+          issues={deliveryIssues}
+          onChangeDecision={handleDeliveryDecision}
+          onExport={handleExportDelivery}
+        />
       )}
 
       {shownSnapshot && (

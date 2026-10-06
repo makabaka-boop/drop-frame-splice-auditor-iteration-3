@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnalysisResult, ClipId, formatClipId } from '../lib/analysis';
+import type { SourceDeliveryPreview } from '../lib/delivery';
 import { formatFrame } from '../lib/timecode';
 import { computeTimelineTicks } from '../lib/timeline';
 
@@ -14,9 +15,16 @@ interface TimelineProps {
   pixelsPerFrame: number;
   active: boolean;
   reuseHighlights?: ReuseHighlight[];
+  deliveryPreview?: SourceDeliveryPreview;
 }
 
-export function Timeline({ result, pixelsPerFrame, active, reuseHighlights = [] }: TimelineProps) {
+export function Timeline({
+  result,
+  pixelsPerFrame,
+  active,
+  reuseHighlights = [],
+  deliveryPreview
+}: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ scrollLeft: 0, width: 1200 });
   const width = Math.max(1, result.dayFrames * pixelsPerFrame);
@@ -109,6 +117,31 @@ export function Timeline({ result, pixelsPerFrame, active, reuseHighlights = [] 
             </g>
           );
         })}
+
+        {deliveryPreview && (
+          <g aria-label="来源交付预演分段">
+            {deliveryPreview.segments.map((segment) => (
+              <rect
+                key={`delivery-${segment.index}`}
+                x={x(segment.recordStart.frame)}
+                y={114}
+                width={Math.max(1, segment.durationFrames * pixelsPerFrame)}
+                height={16}
+                className={`delivery-band delivery-band-${segment.kind}`}
+              >
+                <title>
+                  {`交付预演 #${segment.index + 1} ${
+                    segment.kind === 'gap'
+                      ? '空隙'
+                      : segment.kind === 'unique'
+                        ? '唯一来源'
+                        : '多来源冲突'
+                  }：${segment.recordStart.timecode} → ${segment.recordEnd.timecode}（${segment.durationFrames} 帧）`}
+                </title>
+              </rect>
+            ))}
+          </g>
+        )}
 
         {result.clips.map((clip, index) => {
           const left = x(clip.recordIn.frame);

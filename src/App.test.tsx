@@ -22,6 +22,21 @@ const CONTIGUOUS_INPUT = JSON.stringify({
 
 const INVALID_INPUT = JSON.stringify({ rate: '30000/1001', clips: [] });
 
+const DELIVERY_INPUT = JSON.stringify({
+  rate: '30000/1001',
+  clips: [
+    { id: '甲', sourceIn: '01:00:00;00', sourceOut: '01:00:09;00', recordIn: '00:10:00;00' },
+    { id: '乙', sourceIn: '02:00:00;00', sourceOut: '02:00:03;00', recordIn: '00:10:03;00' },
+    { id: '丙', sourceIn: '03:00:00;00', sourceOut: '03:00:03;00', recordIn: '00:10:10;00' }
+  ]
+});
+
+function setDeliveryRange(start: string, end: string) {
+  fireEvent.change(screen.getByLabelText('来源交付录制开始时码'), { target: { value: start } });
+  fireEvent.change(screen.getByLabelText('来源交付录制结束时码（排他）'), { target: { value: end } });
+  fireEvent.click(screen.getByRole('button', { name: '生成预演' }));
+}
+
 function setInput(value: string) {
   fireEvent.change(screen.getByLabelText('片段 JSON 输入'), { target: { value } });
 }
@@ -165,5 +180,96 @@ describe('page linkage acceptance', () => {
     expect(segments).toHaveLength(1);
     expect(segments[0].clipIds).toEqual(['甲', '乙']);
     expect(segments[0].coverCount).toBe(2);
+  });
+
+  it('blocks delivery export until conflicts are adjudicated and exports merged source items', async () => {
+    const createdBlobs: Blob[] = [];
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      createdBlobs.push(blob);
+      return `blob:mock-${createdBlobs.length}`;
+    });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    render(<App />);
+    setInput(DELIVERY_INPUT);
+    setDeliveryRange('00:10:00;00', '00:10:13;00');
+
+    const panel = screen.getByRole('region', { name: '来源交付预演' });
+    expect(panel.textContent).toContain('空隙 30 帧');
+    expect(panel.textContent).toMatch(/冲突\s*1\/\s*1\s*段未裁决/);
+    expect(panel.textContent).toContain('多来源冲突');
+    expect((screen.getByRole('button', { name: '导出来源清单' }) as HTMLButtonElement).disabled).toBe(true);
+
+    // 冲突段列出了两个现有贡献片段及其精确原片/录制坐标。
+    const conflictChoice = within(panel).getByRole('radio', { name: /"乙"/ });
+    expect((conflictChoice as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(conflictChoice);
+    expect((conflictChoice as HTMLInputElement).checked).toBe(true);
+    // 空隙仍在，裁决了冲突也不能导出。
+    expect((screen.getByRole('button', { name: '导出来源清单' }) as HTMLButtonElement).disabled).toBe(true);
+
+    // 收紧到没有空隙的连续选区：这是一次新预演，旧裁决自然清空。
+    setDeliveryRange('00:10:00;00', '00:10:09;00');
+    const refreshed = screen.getByRole('region', { name: '来源交付预演' });
+    expect(refreshed.textContent).toContain('空隙 0 帧');
+    expect(refreshed.textContent).toMatch(/冲突\s*1\/\s*1\s*段未裁决/);
+    expect((screen.getByRole('button', { name: '导出来源清单' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(refreshed).getByRole('radio', { name: /"甲"/ }));
+
+    const exportButton = screen.getByRole('button', { name: '导出来源清单' });
+    expect(exportButton.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(exportButton);
+    expect(createdBlobs).toHaveLength(1);
+
+    const payload = JSON.parse(await readBlob(createdBlobs[0])) as {
+      itemCount: number;
+      deliveredFrameTotal: number;
+      items: Array<{
+        clipId: string;
+        sourceIn: { frame: number };
+        sourceOut: { frame: number };
+        recordIn: { frame: number };
+        recordOut: { frame: number };
+        durationFrames: number;
+      }>;
+    };
+    // 选择甲后，唯一段、冲突段、唯一段身份和两套坐标都连续，合并为一条取材项。
+    expect(payload.itemCount).toBe(1);
+    expect(payload.deliveredFrameTotal).toBe(9 * 30);
+    expect(payload.items).toEqual([
+      expect.objectContaining({
+        clipId: '甲',
+        sourceIn: { frame: 107_892, timecode: '01:00:00;00' },
+        sourceOut: { frame: 108_162, timecode: '01:00:09;00' },
+        recordIn: { frame: 17_982, timecode: '00:10:00;00' },
+        recordOut: { frame: 18_252, timecode: '00:10:09;00' },
+        durationFrames: 270
+      })
+    ]);
+  });
+
+  it('invalidates delivery decisions when the analysis snapshot changes', () => {
+    render(<App />);
+    setInput(DELIVERY_INPUT);
+    setDeliveryRange('00:10:00;00', '00:10:09;00');
+    const panel = screen.getByRole('region', { name: '来源交付预演' });
+    fireEvent.click(within(panel).getByRole('radio', { name: /"甲"/ }));
+    expect((within(panel).getByRole('radio', { name: /"甲"/ }) as HTMLInputElement).checked).toBe(true);
+
+    // 非法编辑保留旧预演但禁止继续裁决和导出；旧决定不会用于当前非法输入。
+    setInput(INVALID_INPUT);
+    const stalePanel = screen.getByRole('region', { name: '来源交付预演' });
+    expect(stalePanel.textContent).toContain('不能导出，也不会用于新结果');
+    expect((within(stalePanel).getByRole('radio', { name: /"甲"/ }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '导出来源清单' }) as HTMLButtonElement).disabled).toBe(true);
+
+    // 新的合法输入原子替换分析快照，旧预演整体失效并卸载。
+    setInput(CONTIGUOUS_INPUT);
+    expect(screen.queryByRole('region', { name: '来源交付预演' })).toBeNull();
+    setDeliveryRange('00:20:00;00', '00:20:10;00');
+    const freshPanel = screen.getByRole('region', { name: '来源交付预演' });
+    expect(freshPanel.textContent).toMatch(/冲突\s*0\/\s*0\s*段未裁决/);
+    expect((screen.getByRole('button', { name: '导出来源清单' }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
